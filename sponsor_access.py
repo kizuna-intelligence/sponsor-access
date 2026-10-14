@@ -1,9 +1,9 @@
-"""Grant GitHub Sponsors of kizuna-intelligence access to gated Hugging Face repos, and withdraw it when they stop.
+"""Withdraw Hugging Face access from those who stop sponsoring kizuna-intelligence on GitHub.
 
-A Hugging Face access request names a GitHub account. It is accepted when that account is an active sponsor at the
-repo's minimum monthly amount and no other Hugging Face account already holds access through it: each sponsorship
-grants one Hugging Face account, so naming someone else's GitHub account gets nothing once its owner is in.
-An accepted request whose sponsor has left goes back to pending, so sponsoring again restores access on the next run.
+Sponsors get access on https://kizuna-intelligence.com/sponsors/mame-tts by signing in with GitHub and with Hugging
+Face; that page records which Hugging Face account each GitHub login linked in the private dataset MAP. Every run
+moves the access of a Hugging Face account back to pending when no GitHub login linked to it sponsors at the repo's
+minimum any more, so sponsoring again and getting access on that page restores it.
 
     GH_TOKEN=... HF_TOKEN=... python sponsor_access.py [--dry-run]
 """
@@ -16,7 +16,7 @@ from huggingface_hub import HfApi
 
 ORG = "kizuna-intelligence"
 REPOS = {"kizuna-intelligence/mame-tts": 5}  # gated Hugging Face repo -> minimum monthly amount in USD
-FIELD = "GitHub username"
+MAP = "kizuna-intelligence/sponsor-access-map"  # dataset with map.json: GitHub login -> Hugging Face user
 KEEP = {"yusuke-ai"}  # Hugging Face users granted by hand; never withdrawn
 
 
@@ -48,37 +48,23 @@ def sponsors():
         cursor = page["pageInfo"]["endCursor"]
 
 
-def github_login(request):
-    return (request.fields or {}).get(FIELD, "").strip().lstrip("@").lower()
-
-
 def main(dry_run):
     """Logs are public (this repository is public), so they carry counts only, never who sponsors."""
     api, paid = HfApi(), sponsors()
+    links = json.load(open(api.hf_hub_download(MAP, "map.json", repo_type="dataset", force_download=True)))
     for repo, minimum in REPOS.items():
         eligible = {login for login, amount in paid.items() if amount >= minimum}
-        accepted = withdrawn = failed = 0
-        holders = {github_login(r) for r in api.list_accepted_access_requests(repo)}
-        for r in api.list_pending_access_requests(repo):
-            login = github_login(r)
+        keep = KEEP | {user for login, user in links.items() if login in eligible}
+        accepted = {r.username for r in api.list_accepted_access_requests(repo)}
+        withdrawn = failed = 0
+        for user in sorted(set(links.values()) & accepted - keep):
             try:
-                if login in eligible and login not in holders:
-                    holders.add(login)
-                    if not dry_run:
-                        api.accept_access_request(repo, r.username)
-                    accepted += 1
+                if not dry_run:
+                    api.cancel_access_request(repo, user)
+                withdrawn += 1
             except Exception:
                 failed += 1
-        for r in api.list_accepted_access_requests(repo):
-            login = github_login(r)
-            if r.username not in KEEP and login and login not in eligible:
-                try:
-                    if not dry_run:
-                        api.cancel_access_request(repo, r.username)
-                    withdrawn += 1
-                except Exception:
-                    failed += 1
-        print(f"{repo}: {len(eligible)} eligible sponsors, accepted {accepted}, withdrew {withdrawn}, failed {failed}")
+        print(f"{repo}: {len(eligible)} eligible sponsors, {len(links)} links, withdrew {withdrawn}, failed {failed}")
         if failed:
             sys.exit(1)
 

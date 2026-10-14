@@ -64,21 +64,32 @@ def github_login(request):
 
 
 def main(dry_run):
+    """Logs are public (this repository is public), so they carry counts only, never who sponsors."""
     api, paid = HfApi(), sponsors()
     for repo, minimum in REPOS.items():
         eligible = {login for login, amount in paid.items() if amount >= minimum}
+        accepted = withdrawn = failed = 0
         for r in api.list_pending_access_requests(repo):
             login = github_login(r)
-            if login in eligible and links_hf(login, r.username):
-                print(f"{repo}: accept {r.username} (GitHub {login})")
-                if not dry_run:
-                    api.accept_access_request(repo, r.username)
+            try:
+                if login in eligible and links_hf(login, r.username):
+                    if not dry_run:
+                        api.accept_access_request(repo, r.username)
+                    accepted += 1
+            except Exception:
+                failed += 1
         for r in api.list_accepted_access_requests(repo):
             login = github_login(r)
             if r.username not in KEEP and login and login not in eligible:
-                print(f"{repo}: withdraw {r.username} (GitHub {login} no longer sponsors)")
-                if not dry_run:
-                    api.cancel_access_request(repo, r.username)
+                try:
+                    if not dry_run:
+                        api.cancel_access_request(repo, r.username)
+                    withdrawn += 1
+                except Exception:
+                    failed += 1
+        print(f"{repo}: {len(eligible)} eligible sponsors, accepted {accepted}, withdrew {withdrawn}, failed {failed}")
+        if failed:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
